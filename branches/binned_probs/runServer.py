@@ -81,7 +81,10 @@ def loadfromdb():
     task_time = time() - t0
     print("Query time: %0.3fs" % task_time)    
     
-    rowdata = {'rows': rows, 't0': t0}
+    rowstrip =[]
+    for row in rows:
+        rowstrip.append([el for el in row])
+    rowdata = {'rows': rowstrip, 't0': t0}
     with open(picklefile, 'wb') as fh:
         pickle.dump(rowdata, fh)
     
@@ -147,7 +150,6 @@ def __train(force_load = False, param_search = False, reload_time = 1, nquantile
     print("Learn time: %0.3fs" % task_time)
     t0 = time()
     return classifier
-
     
 @app.route('/')
 def test_function():
@@ -167,7 +169,12 @@ def svm_classify(grantDescription=None):
     predicted = classifier.predict([grantDescription])
     margin = classifier.decision_function([grantDescription])
     
-    prob = qm[pd.cut([margin], bins, labels=False)[0]]
+    mbin = pd.cut([margin], bins, labels=False)[0]
+    if margin < bin[0]:
+        mbin = 0
+    elif margin > bin[-1]:
+        mbin = nquantiles - 1 
+    prob = qm[mbin]
     
     task_time = time() - t0
     print("Prediction time: %0.3fs" % task_time)
