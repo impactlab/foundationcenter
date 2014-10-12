@@ -167,7 +167,7 @@ def svm_classify(grantDescription=None):
     t0 = time()
     
     predicted = classifier.predict([grantDescription])
-    margin = classifier.decision_function([grantDescription])
+    margin = np.max(classifier.decision_function([grantDescription]))
     
     mbin = pd.cut([margin], bins, labels=False)[0]
     if margin < bin[0]:

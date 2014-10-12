@@ -152,7 +152,7 @@ class grantClassifier:
             mbin = self.nquantiles - 1 
         prob = self.quantileProbs[mbin]
             
-        return predicted, prob
+        return predicted[0], prob
     
     def binnedProbs(self):
         #divide the SVM margins into quantiles and calculate the accuracy for each quantile
