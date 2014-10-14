@@ -30,29 +30,49 @@ DB_SETTINGS = {'driver': '{FreeTDS}',
                'pwd': 'textmining',
                'database':'text_classification'}
 
-DB_TABLE = 'set1'
+DB_FIELDS = {'table':'grants', 
+             'desc': 'description', 
+             'org': 'recipient_name',
+             'label': 'activity_override3'}
+             
+             
 
 class grantData:
-    def __init__(self, dbSettings = DB_SETTINGS, dbTable = DB_TABLE, pickleFile = None):
+    def __init__(self, dbSettings = DB_SETTINGS, dbFields = DB_FIELDS, holdout_frac = 0.1, pickleFile = None):
         self.dbSettings = dbSettings
-        self.dbTable = dbTable
+        self.dbFields = dbFields
         self.loadTime = 0
         self.pickleFile = pickleFile
+        self.holdout_frac = holdout_frac
         
-        self.load()
+        #self.load()
         
     def fetchFromDB(self):
         try:
             cnxn = pyo.connect(**self.dbSettings)
             
             cursor = cnxn.cursor()
-            cursor.execute("select * from " + self.dbTable + " order by 1 ")
+            fieldstr = ','.join([self.dbFields['desc'],self.dbFields['org'],self.dbFields['label']])
+            cursor.execute("select " + fieldstr + " from " + self.dbFields['table'])
             rows = cursor.fetchall()
             
-            #convert pypyodbc object to generic list
+            field_names = [d[0] for d in cursor.description]
+            
+            try: 
+                desc_ix = field_names.index(self.dbFields['desc'])
+                label_ix = field_names.index(self.dbFields['label'])
+            except valueError:
+                return [[]]
+            
+            #Check if table has organization names            
             rowstrip =[]
-            for row in rows:
-                rowstrip.append([el for el in row])
+            try:
+                org_ix = field_names.index(self.dbFields['org'])               
+                for row in rows:
+                    rowstrip.append([row[desc_ix] + ' ' + row[org_ix], row[label_ix]])  
+            except valueError:
+                for row in rows:
+                    rowstrip.append([row[desc_ix], row[label_ix]])                
             
             #pickle the database query
             self.loadTime = time()
@@ -92,15 +112,10 @@ class grantData:
             return False
         
         #Slice into training and test sets
-        self.trainX, self.trainY = [],[]
-        self.testX, self.testY = [],[]
-        for r in rows:
-            if(r[3]!="test"):
-                self.trainX.append(r[2])#+ (" " + r[4].decode('latin')).replace(" "," @")
-                self.trainY.append(r[1])
-            else:
-                self.testX.append(r[2])#+ (" " + r[4].decode('latin')).replace(" "," @")
-                self.testY.append(r[1])      
+        np.random.shuffle(rows)
+        cutoff = int(len(rows)*self.holdout_frac)
+        self.trainX, self.trainY = [list(l for l in zip(*rows[cutoff:]))][0]
+        self.testX, self.testY = [list(l for l in zip(*rows[:cutoff]))][0]
 
 class grantClassifier:
     def __init__(self, data = None, nquantiles = 25):
@@ -140,6 +155,9 @@ class grantClassifier:
             self.classifier = svmClassifier
             
         self.binnedProbs()
+        
+    def test(self):
+        return self.classifier.score(self.testX, self.testY)
     
     def predict_single(self, X):
         predicted = self.classifier.predict([X])
