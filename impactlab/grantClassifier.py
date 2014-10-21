@@ -23,6 +23,7 @@ from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import regexp_tokenize
 from nltk.tokenize import RegexpTokenizer
 
+#Settings for connection to database server
 DB_SETTINGS = {'driver': '{FreeTDS}',
                'server': '172.16.8.60',
                'port': '1433',
@@ -30,28 +31,37 @@ DB_SETTINGS = {'driver': '{FreeTDS}',
                'pwd': 'textmining',
                'database':'text_classification'}
 
+#Settings for database table. 
+#'table' is the table name, plus the following specific fields
+#desc: grant description text
+#label: three-character grant label 
+#org: organization name, currently this is concatenated with the text description
 DB_FIELDS = {'table':'grants', 
              'desc': 'description', 
              'org': 'recipient_name',
-             'label': 'activity_override3'}
-             
-             
-
+             'label': 'activity_override3',
+             'maxRows': None}
+                          
 class grantData:
-    def __init__(self, dbSettings = DB_SETTINGS, dbFields = DB_FIELDS, holdout_frac = 0.1, pickleFile = None):
+    #Handles fetching of grant data from database or file. 
+    def __init__(self, dbSettings = DB_SETTINGS, dbFields = DB_FIELDS, 
+                 holdout_frac = 0.1, pickleFile = None, reload_time = 1):
         self.dbSettings = dbSettings
         self.dbFields = dbFields
-        self.loadTime = 0
+        self.reload_time = 0. #number of days before data saved to file becomes stale
         self.pickleFile = pickleFile
-        self.holdout_frac = holdout_frac
+        self.holdout_frac = holdout_frac #fraction of data to be held out for training
+        
+        self.loadTime = 0 
         
         #self.load()
         
     def fetchFromDB(self):
         try:
-            cnxn = pyo.connect(**self.dbSettings)
-            
+            cnxn = pyo.connect(**self.dbSettings)           
             cursor = cnxn.cursor()
+            
+            topstr = ('TOP ' + str(DB_FIELDS['maxRows']) + ' ') if DB_FIELDS['maxRows'] != None else '' 
             fieldstr = ','.join([self.dbFields['desc'],self.dbFields['org'],self.dbFields['label']])
             cursor.execute("select " + fieldstr + " from " + self.dbFields['table'])
             rows = cursor.fetchall()
@@ -95,9 +105,11 @@ class grantData:
             return [[]], 0
         
     def fetch(self):    
+        #chooses whether to fetch from file or database
         if self.pickleFile is not None:
+            #check if data is stale, if so load from DB
             rowf, fileTime = self.fetchFromFile()     
-            if time() - fileTime < reload_time * 60*60*24:
+            if time() - fileTime < self.reload_time * 60*60*24:
                 rows = rowf
                 self.loadTime = fileTime
             else:
@@ -107,6 +119,7 @@ class grantData:
         return rows
      
     def load(self): 
+        #load data and split into training and test sets
         rows = self.fetch()
         if rows is None:
             return False
@@ -142,9 +155,13 @@ class grantClassifier:
                 if(word.lower()) not in self.english_stops]
 
     def train(self, grid_search = False):
-        svmClassifier = Pipeline([ ('vectorizer', CountVectorizer(ngram_range=(1, 2), min_df=1,tokenizer=self.lemaTokenizer)), ('tfidf', TfidfTransformer()),('clf', OneVsRestClassifier(LinearSVC()))])
+        svmClassifier = Pipeline([ ('vectorizer', CountVectorizer(ngram_range=(1, 2),
+                                                                  min_df=1,tokenizer=self.lemaTokenizer)),
+                                   ('tfidf', TfidfTransformer()),
+                                   ('clf', OneVsRestClassifier(LinearSVC()))])
         
         if grid_search:
+            #option to grid-search the regularization parameter C
             params = dict(clf__estimator__C=[0.1, 1, 10, 100])
             grid_search = GridSearchCV(svmClassifier, param_grid=params)   
             grid_search.fit(self.data.trainX, self.data.trainY)
@@ -157,11 +174,12 @@ class grantClassifier:
         self.binnedProbs()
         
     def test(self):
-        return self.classifier.score(self.testX, self.testY)
+        return self.classifier.score(self.data.testX, self.data.testY)
     
     def predict_single(self, X):
         predicted = self.classifier.predict([X])
         
+        #calculate accuracy estimate based on binned probabilities
         margin = np.max(self.classifier.decision_function([X]))        
         mbin = pd.cut([margin], self.marginBins, labels=False)[0]
         if margin < self.marginBins[0]:
