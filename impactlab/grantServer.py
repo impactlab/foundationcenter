@@ -1,9 +1,10 @@
 from flask import Flask, request, json, current_app
-import grantClassifier
+import grantClassifier2 as grantClassifier
 
 app = Flask(__name__)
 
-myData = grantClassifier.grantData()
+myData = grantClassifier.grantData(picklefile = 'gd.pkl')
+myData.load()
 
 myClassifier = grantClassifier.grantClassifier(myData)
 myClassifier.train()
