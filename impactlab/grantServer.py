@@ -1,5 +1,5 @@
 from flask import Flask, request, json, current_app
-import grantClassifier2 as grantClassifier
+import grantClassifier as grantClassifier
 
 app = Flask(__name__)
 
