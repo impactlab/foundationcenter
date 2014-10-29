@@ -129,7 +129,13 @@ class grantClassifier:
         self.classifier = None 
         self.data = data
         self.nquantiles = nquantiles
-
+        self.picklefile = picklefile 
+        self.reload_time = reload_time 
+    
+    def load():
+        self.classifier = loadNonStaleFile(self.picklefile, self.train, max_age = self.reload_time)
+        self.binnedProbs()
+        
     def train(self, grid_search = False):
         svmClassifier = Pipeline([ ('vectorizer', CountVectorizer(ngram_range=(1, 2),
                                                                   min_df=1,tokenizer=lemaTokenizer)),
@@ -141,13 +147,13 @@ class grantClassifier:
             params = {'clf__estimator__C':(0.1, 1, 10, 1000)}
             grid_search = GridSearchCV(svmClassifier, param_grid=params)   
             grid_search.fit(self.data.trainX, self.data.trainY)
+            if self.picklefile is not None:
+                pickle.dump(self.classifier, open(self.picklefile, 'wb'))
             
-            self.classifier = grid_search.best_estimator_            
+            return grid_search.best_estimator_
         else:
             svmClassifier.fit(self.data.trainX, self.data.trainY)        
-            self.classifier = svmClassifier
-            
-        self.binnedProbs()
+            return svmClassifier
         
     def test(self):
         return self.classifier.score(self.data.testX, self.data.testY)

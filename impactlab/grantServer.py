@@ -7,7 +7,20 @@ myData = grantClassifier.grantData(picklefile = 'gd.pkl')
 myData.load()
 
 myClassifier = grantClassifier.grantClassifier(myData)
-myClassifier.train()
+myClassifier.load()
+
+@app.route('/svm_autoclassify/<grantDescription>')
+def svm_classify(grantDescription=None):
+    # Main end-point. Given a text returns the text, accuracy, and predicted class 
+
+    prediction, prob = myClassifier.predict_single(grantDescription)
+    return current_app.response_class(__pad(__dumps(
+        data=[i for i in [prediction,prob,grantDescription] ])),mimetype=__mimetype())
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0',port =9090) 
+
+#Formatting functions:
 
 def __pad(strdata):
     """ Pads `strdata` with a Request's callback argument, if specified, or does
@@ -34,14 +47,3 @@ def __dumps(*args, **kwargs):
         indent = 2
     return json.dumps(args[0] if len(args) is 1 else dict(*args, **kwargs),
                       indent=indent)
-
-@app.route('/svm_autoclassify/<grantDescription>')
-def svm_classify(grantDescription=None):
-    """ main end-point. Given a text returns the text and class.
-    """
-    prediction, prob = myClassifier.predict_single(grantDescription)
-    return current_app.response_class(__pad(__dumps(
-        data=[i for i in [prediction,prob,grantDescription] ])),mimetype=__mimetype())
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0',port =9090) 
