@@ -123,12 +123,17 @@ def loadNonStaleFile(picklefile, loader, max_age = datetime.timedelta(days=1)):
         return None
 
 class grantClassifier:
+<<<<<<< HEAD
     #scikit-learn classifier for labeling grant descriptions with grant categories. 
+=======
+    #scikit-learn class for labeling grant descriptions with grant categories. 
+>>>>>>> 1fdf93692daef08477da62d59a848b60e0e23ef4
     def __init__(self, data = None, nquantiles = 25, picklefile = None, 
                  reload_time = datetime.timedelta(days=1)):
         self.classifier = None 
         self.data = data
         self.nquantiles = nquantiles
+<<<<<<< HEAD
         self.picklefile = picklefile 
         self.reload_time = reload_time 
     
@@ -136,6 +141,9 @@ class grantClassifier:
         self.classifier = loadNonStaleFile(self.picklefile, self.train, max_age = self.reload_time)
         self.binnedProbs()
         
+=======
+
+>>>>>>> 1fdf93692daef08477da62d59a848b60e0e23ef4
     def train(self, grid_search = False):
         svmClassifier = Pipeline([ ('vectorizer', CountVectorizer(ngram_range=(1, 2),
                                                                   min_df=1,tokenizer=lemaTokenizer)),
@@ -186,7 +194,11 @@ class grantClassifier:
         
 # Tokenization and lemmatization
 # Isn't convenient to put inside the class 
+<<<<<<< HEAD
 # because of issues with deep copying.  
+=======
+# because of problems with deep copying.  
+>>>>>>> 1fdf93692daef08477da62d59a848b60e0e23ef4
     
 lemmatizer = WordNetLemmatizer()
 rTokenizer = RegexpTokenizer('\w+|\$[\d\.]+')#\w+|\$[\d\.]+|\S+

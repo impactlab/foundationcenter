@@ -1,5 +1,9 @@
 from flask import Flask, request, json, current_app
+<<<<<<< HEAD
 import grantClassifier as grantClassifier
+=======
+import grantClassifier2 as grantClassifier
+>>>>>>> 1fdf93692daef08477da62d59a848b60e0e23ef4
 
 app = Flask(__name__)
 
