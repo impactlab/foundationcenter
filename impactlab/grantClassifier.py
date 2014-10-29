@@ -1,5 +1,4 @@
-#coding: utf8
-
+# -*- coding: utf-8 -*-
 from flask import Flask, request, json, current_app
 
 import os,re, pickle, datetime
@@ -39,7 +38,7 @@ DB_FIELDS = {'table':'grants',
              'desc': 'description', 
              'org': 'recipient_name',
              'label': 'activity_override3',
-             'maxRows': None}
+             'maxRows': 50000}
                           
 class grantData:
     #Handles fetching of grant data from database or file. 
@@ -105,6 +104,12 @@ class grantData:
         self.testX, self.testY = [list(l for l in zip(*rows[:cutoff]))][0]
 
 def loadNonStaleFile(picklefile, loader, max_age = datetime.timedelta(days=1)):
+    # Loads object from disk if the file is not older than max_age
+    # Otherwise loads object by calling loader()
+    
+    if not isinstance(picklefile, basestring):
+        picklefile = ''
+    
     if os.path.isfile(picklefile):
         filetime = datetime.datetime.fromtimestamp(os.path.getmtime(picklefile))
         if datetime.datetime.now() - filetime < max_age:
@@ -126,52 +131,83 @@ class grantClassifier:
     #scikit-learn classifier for labeling grant descriptions with grant categories. 
 
     def __init__(self, data = None, nquantiles = 25, picklefile = None, 
-                 reload_time = datetime.timedelta(days=1)):
+                 reload_time = datetime.timedelta(days=1), grid_search = False):
         self.classifier = None 
         self.data = data
         self.nquantiles = nquantiles
         self.picklefile = picklefile 
         self.reload_time = reload_time 
+        self.grid_search = grid_search
     
-    def load():
+    def load(self):
+        #Loads classifier from disk if file exists and is not older than reload_time. 
+        #Otherwise trains from data 
+        
         self.classifier = loadNonStaleFile(self.picklefile, self.train, max_age = self.reload_time)
         self.binnedProbs()
 
-    def train(self, grid_search = False):
-        svmClassifier = Pipeline([ ('vectorizer', CountVectorizer(ngram_range=(1, 2),
-                                                                  min_df=1,tokenizer=lemaTokenizer)),
+    def train(self):
+        #Trains classifier from data
+        svmClassifier = Pipeline([ ('vectorizer', CountVectorizer(ngram_range=(1, 2),min_df=1,
+                                                                  tokenizer=lemaTokenizer)),
                                    ('tfidf', TfidfTransformer()),
                                    ('clf', OneVsRestClassifier(LinearSVC()))])
         
-        if grid_search:
-            #option to grid-search the regularization parameter C
+        if self.grid_search:
+            #Option to grid-search the regularization parameter C
             params = {'clf__estimator__C':(0.1, 1, 10, 1000)}
             grid_search = GridSearchCV(svmClassifier, param_grid=params)   
             grid_search.fit(self.data.trainX, self.data.trainY)
-            if self.picklefile is not None:
-                pickle.dump(self.classifier, open(self.picklefile, 'wb'))
             
-            return grid_search.best_estimator_
+            clf = grid_search.best_estimator_
         else:
             svmClassifier.fit(self.data.trainX, self.data.trainY)        
-            return svmClassifier
+            clf = svmClassifier
+        
+        if self.picklefile is not None:
+            pickle.dump(clf, open(self.picklefile, 'wb'))  
+        
+        return clf         
         
     def test(self):
+        #Computes accuracy of classifer on the holdout set
         return self.classifier.score(self.data.testX, self.data.testY)
     
     def predict_single(self, X):
         predicted = self.classifier.predict([X])
         
-        #calculate accuracy estimate based on binned probabilities
+        #Calculate accuracy estimate based on binned probabilities
         margin = np.max(self.classifier.decision_function([X]))        
+        prob = self.calcProb(margin)
+            
+        return predicted[0], prob
+    
+    def predict_multiple(self, X, npredict = 5):
+        #Return npredict highest classes and scores
+        #scores should no longer be interpreted as probabilities 
+        
+        predicted = self.classifier.predict([X])
+        
+        margins = np.hstack(self.classifier.decision_function([X]))
+        top_id = np.argsort(margins)[::-1][:npredict]
+        
+        class_names = self.classifier.steps[2][1].classes_
+        
+        top_classes = []
+        for ii in top_id:
+            top_classes.append([class_names[ii], self.calcProb(margins[ii])])
+            
+        return top_classes
+        
+    def calcProb(self, margin):
+        #Given a margin, look up the quantile and then 
+        #the accuracy of that quantile
         mbin = pd.cut([margin], self.marginBins, labels=False)[0]
         if margin < self.marginBins[0]:
             mbin = 0
         elif margin > self.marginBins[-1]:
             mbin = self.nquantiles - 1 
-        prob = self.quantileProbs[mbin]
-            
-        return predicted[0], prob
+        return self.quantileProbs[mbin]        
     
     def binnedProbs(self):
         #divide the SVM margins into quantiles and calculate the accuracy for each quantile
@@ -194,14 +230,12 @@ rTokenizer = RegexpTokenizer('\w+|\$[\d\.]+')#\w+|\$[\d\.]+|\S+
 english_stops = stopwords.words('english')
 
 def lematizeWord(word):
-    # Lemmatizes word. Doesn't distinguish tags. Changes word to lower case.
-    
+    # Lemmatizes word. Doesn't distinguish tags. Changes word to lower case.   
     return lemmatizer.lemmatize(
         lemmatizer.lemmatize(word.lower(), pos='v'), pos='n')
 
 def lemaTokenizer(text):
-    # Tokenizes text, lemmatizes words in text and returns the non-stop words (pre-lemma).
-    
+    # Tokenizes text, lemmatizes words in text and returns the non-stop words (pre-lemma).  
     return [lematizeWord(word.lower()) 
             for word in rTokenizer.tokenize(re.sub(r'á', ' ', text.replace("'s", ""))) 
             if(word.lower()) not in english_stops]

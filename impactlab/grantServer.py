@@ -1,32 +1,29 @@
+"""
+Prototype API for Foundation Center
+
+Loads data from database or file, 
+trains SVM classifier.
+
+Given a grant description as string, 
+returns either 
+(1) the predicted grant type and estimated
+probability of being correct
+or (2) the top n classes and scores 
+for each class
+"""
+
 from flask import Flask, request, json, current_app
 import grantClassifier as grantClassifier
 
+#Parameters
 
-app = Flask(__name__)
+TOPN_DEFAULT = 5
 
-myData = grantClassifier.grantData(picklefile = 'gd.pkl')
-myData.load()
-
-myClassifier = grantClassifier.grantClassifier(myData)
-myClassifier.load()
-
-@app.route('/svm_autoclassify/<grantDescription>')
-def svm_classify(grantDescription=None):
-    # Main end-point. Given a text returns the text, accuracy, and predicted class 
-
-    prediction, prob = myClassifier.predict_single(grantDescription)
-    return current_app.response_class(__pad(__dumps(
-        data=[i for i in [prediction,prob,grantDescription] ])),mimetype=__mimetype())
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0',port =9090) 
-
-#Formatting functions:
+#Text formatting functions:
 
 def __pad(strdata):
-    """ Pads `strdata` with a Request's callback argument, if specified, or does
-    nothing.
-    """
+    # Pads `strdata` with a Request's callback argument, if specified, or does
+    # nothing.
     if request.args.get('callback'):
         return "%s(%s);" % (request.args.get('callback'), strdata)
     else:
@@ -39,12 +36,42 @@ def __mimetype():
         return 'application/json'
 
 def __dumps(*args, **kwargs):
-    """ Serializes `args` and `kwargs` as JSON. Supports serializing an array
-    as the top-level object, if it is the only argument.
-    """
+    # Serializes `args` and `kwargs` as JSON. Supports serializing an array
+    # as the top-level object, if it is the only argument.  
     indent = None
     if (current_app.config.get('JSONIFY_PRETTYPRINT_REGULAR', False)
             and not request.is_xhr):
         indent = 2
     return json.dumps(args[0] if len(args) is 1 else dict(*args, **kwargs),
                       indent=indent)
+
+#Main program
+
+app = Flask(__name__)
+
+myData = grantClassifier.grantData(picklefile = 'gd.pkl')
+myData.load()
+
+myClassifier = grantClassifier.grantClassifier(myData)
+myClassifier.load()
+
+@app.route('/svm_autoclassify/<grantDescription>')
+def svm_classify(grantDescription = None):
+    # Main end-point. Given a text returns the text, accuracy, and predicted class 
+    prediction, prob = myClassifier.predict_single(grantDescription)
+    return current_app.response_class(__pad(__dumps(
+        data=[i for i in [prediction,prob,grantDescription] ])),mimetype=__mimetype())
+
+@app.route('/svm_multiple/<grantDescription>/<topn>')
+def svm_multiple(grantDescription = None, topn = None):
+    # Alternate end-point. Given a text returns the text, plus the accuracy, and predicted class 
+    # of top-scoring classes
+    try: 
+        npredict = int(topn)
+    except ValueError:
+        npredict = TOPN_DEFAULT
+    top_classes = myClassifier.predict_multiple(grantDescription, npredict=npredict)
+    return current_app.response_class(__pad(json.dumps([grantDescription,top_classes])),mimetype=__mimetype())
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0',port =9090) 
