@@ -13,7 +13,9 @@ for each class
 """
 
 from flask import Flask, request, json, current_app
+from flask.ext.sqlalchemy import SQLAlchemy
 import grantClassifier as grantClassifier
+import json, datetime
 
 #Parameters
 
@@ -49,11 +51,40 @@ def __dumps(*args, **kwargs):
 
 app = Flask(__name__)
 
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mssql+pymssql://user:textmining@172.16.8.60:1433/text_classification'
+app.config['SQLALCHEMY_ECHO'] = True
+db = SQLAlchemy(app)
+
 myData = grantClassifier.grantData(picklefile = 'gd.pkl')
 myData.load()
 
 myClassifier = grantClassifier.grantClassifier(myData)
 myClassifier.load()
+
+#SQLAlchemy models
+
+class retrainedGrants(db.Model):
+    __tablename__ = 'retrained_grants'
+    rowid = db.Column(db.Integer, primary_key = True)
+    
+    user_id = db.Column(db.Integer)
+    entry_date = db.Column(db.DateTime) 
+    grant_id = db.Column(db.Integer)
+    
+    description = db.Column(db.String(1000))
+    activity = db.Column(db.String(10))
+    
+    activity_svm = db.Column(db.String(10))
+    activity_rule = db.Column(db.String(10))
+    model_version = db.Column(db.String(255))
+
+    @classmethod
+    def loadfromjson(cls, inStr):
+        inDict = json.loads(inStr)
+        inDict['entry_date'] = datetime.datetime.now()
+        return cls(**inDict)
+
+#Flask routes
 
 @app.route('/svm_autoclassify/<grantDescription>')
 def svm_classify(grantDescription = None):
@@ -73,5 +104,14 @@ def svm_multiple(grantDescription = None, topn = None):
     top_classes = myClassifier.predict_multiple(grantDescription, npredict=npredict)
     return current_app.response_class(__pad(json.dumps([grantDescription,top_classes])),mimetype=__mimetype())
 
+@app.route('/add_label/<something>', methods=['GET', 'POST'])
+def add_label(something = None):
+    data = request.data
+    newRow = retrainedGrants.loadfromjson(data)
+    
+    db.session.add(newRow)
+    db.session.commit()
+    return 'Added row to database\n' + data
+    
 if __name__ == '__main__':
     app.run(host='0.0.0.0',port =9090) 
