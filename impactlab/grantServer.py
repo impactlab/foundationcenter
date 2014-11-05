@@ -14,7 +14,7 @@ for each class
 
 from flask import Flask, request, json, current_app
 from flask.ext.sqlalchemy import SQLAlchemy
-import grantClassifier as grantClassifier
+import grantClassifier 
 import json, datetime
 
 #Parameters
@@ -89,9 +89,9 @@ class retrainedGrants(db.Model):
 @app.route('/svm_autoclassify/<grantDescription>')
 def svm_classify(grantDescription = None):
     # Main end-point. Given a text returns the text, accuracy, and predicted class 
-    prediction, prob = myClassifier.predict_single(grantDescription)
+    prediction, prob = myClassifier.predict([grantDescription])
     return current_app.response_class(__pad(__dumps(
-        data=[i for i in [prediction,prob,grantDescription] ])),mimetype=__mimetype())
+        data=[i for i in [prediction[0],prob[0],grantDescription] ])),mimetype=__mimetype())
 
 @app.route('/svm_multiple/<grantDescription>/<topn>')
 def svm_multiple(grantDescription = None, topn = None):
@@ -105,13 +105,20 @@ def svm_multiple(grantDescription = None, topn = None):
     return current_app.response_class(__pad(json.dumps([grantDescription,top_classes])),mimetype=__mimetype())
 
 @app.route('/add_label/<something>', methods=['GET', 'POST'])
-def add_label(something = None):
+def add_label(something = None):    
     data = request.data
     newRow = retrainedGrants.loadfromjson(data)
     
     db.session.add(newRow)
     db.session.commit()
     return 'Added row to database\n' + data
-    
+
+@app.route('/svm_batch/<something>', methods=['GET', 'POST'])
+def svm_batch(something = None):
+    data = json.loads(request.data)
+    prediction, prob = myClassifier.predict(data)
+    return current_app.response_class(__pad(
+        json.dumps([request.data, zip(prediction, prob)])),mimetype=__mimetype())
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0',port =9090) 

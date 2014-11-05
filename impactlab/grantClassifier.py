@@ -102,6 +102,12 @@ class grantData:
         cutoff = int(len(rows)*self.holdout_frac)
         self.trainX, self.trainY = [list(l for l in zip(*rows[cutoff:]))][0]
         self.testX, self.testY = [list(l for l in zip(*rows[:cutoff]))][0]
+        
+    def appendData(self, moreData):
+        self.trainX = self.trainX + moreData.trainX
+        self.trainY = self.trainY + moreData.trainY
+        self.testX = self.testX + moredata.testX
+        self.testY = self.testY + moredata.testY
 
 def loadNonStaleFile(picklefile, loader, max_age = datetime.timedelta(days=1)):
     # Loads object from disk if the file is not older than max_age
@@ -173,15 +179,15 @@ class grantClassifier:
         #Computes accuracy of classifer on the holdout set
         return self.classifier.score(self.data.testX, self.data.testY)
     
-    def predict_single(self, X):
-        predicted = self.classifier.predict([X])
+    def predict(self, X):
+        predicted = self.classifier.predict(X)
         
         #Calculate accuracy estimate based on binned probabilities
-        margin = np.max(self.classifier.decision_function([X]))        
-        prob = self.calcProb(margin)
+        margins = np.max(self.classifier.decision_function(X),1)        
+        prob = self.calcProb(margins)
             
-        return predicted[0], prob
-    
+        return predicted, prob
+            
     def predict_multiple(self, X, npredict = 5):
         #Return npredict highest classes and scores
         #scores should no longer be interpreted as probabilities 
@@ -193,21 +199,19 @@ class grantClassifier:
         
         class_names = self.classifier.steps[2][1].classes_
         
-        top_classes = []
-        for ii in top_id:
-            top_classes.append([class_names[ii], self.calcProb(margins[ii])])
+        top_classes = [class_names[ix] for ix in top_id[:npredict]]
+        top_scores = self.calcProb([margins[ix] for ix in top_id[:npredict]])
             
-        return top_classes
+        return zip(top_classes, top_scores)
         
-    def calcProb(self, margin):
+    def calcProb(self, margins):
         #Given a margin, look up the quantile and then 
         #the accuracy of that quantile
-        mbin = pd.cut([margin], self.marginBins, labels=False)[0]
-        if margin < self.marginBins[0]:
-            mbin = 0
-        elif margin > self.marginBins[-1]:
-            mbin = self.nquantiles - 1 
-        return self.quantileProbs[mbin]        
+        mbins = pd.cut(margins, self.marginBins, labels=False)
+        mbins[margins<self.marginBins[0]] = 0 
+        mbins[margins>self.marginBins[-1]] = self.nquantiles - 1 
+        
+        return [self.quantileProbs[mb] for mb in mbins]    
     
     def binnedProbs(self):
         #divide the SVM margins into quantiles and calculate the accuracy for each quantile
