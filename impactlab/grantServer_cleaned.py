@@ -20,7 +20,16 @@ DB_FIELDS = {'table':'grants',
              'desc': 'description', 
              'org': 'recipient_name',
              'label': 'activity_override3',
+             'pk': 'grant_key',
+             'retrain_count': 'number_retrains',
              'maxRows': 50000}
+
+RETRAIN_FIELDS = {'table':'retrained_grants',
+                  'desc':'description',
+                  'org': '',
+                  'label':'activity',
+                  'text_key': 'grant_id',
+                  'maxRows': None}
 
 TOPN_DEFAULT = 5
 MAXIMUM_OFFSET = 1000
@@ -36,10 +45,12 @@ db = SQLAlchemy(app)
 myData = grantClassifier.grantData(picklefile = PICKLE_FILE, 
                                    sqla_connection = db.engine.connect(), 
                                    dbFields = DB_FIELDS)
-myData.load()
+
+retrainData = grantClassifier.grantData(sqla_connection = db.engine.connect(), 
+                                        dbFields = RETRAIN_FIELDS)
 
 myClassifier = grantClassifier.grantClassifier(myData)
-myClassifier.load()
+
 
 class Grant(db.Model):
     __table__ = db.Table(DB_FIELDS['table'], db.metadata, autoload=True, autoload_with=db.engine)
@@ -74,6 +85,7 @@ def text():
     text = _text()
     if not text:
         return '', 400 # error
+    text['text'] = text.pop[DB_FIELDS['desc']]
     return json.dumps(text)
     
 def _text():
@@ -198,8 +210,73 @@ def _classify(j={}):
     except:
         return None
 
+@app.route('/train')
+def train():
+    """ URL hook that initiates retraining of the classifier
+
+    TODO: shouldn't be public - maybe this a hook is only accessible via SECRET_KEY?
+    """
+    if not _train(myData, retrainData, myClassifier):
+        return '', 400
+    return ''
+
+def _train(data=None, retrain_data=None, classifier=None):
+    """ (re)train the classifer given new labeled data
+
+    input: n/a
+    output: bool (on success) or None (on failure)
+    In the _train() method, this process might look like:
+        - run classifier(s) training method on all labeled data
+        - output a pickle file of newly built classifer, with data in filename
+        NOTE: It's probably better to do this in another process so as to not hit
+        100 percent CPU in the API's process due to retraining.
+
+    Externally, one might manage this via:
+        - have a cronjob that runs daily and hits this hook to do the retraining
+        - have a cronjob that runs daily (later, after retraining) and restarts the server.
+            alternately use a unix utility like `inotifywait` in order to watch for file changes
+            and restart... http://superuser.com/questions/181517/how-to-execute-a-command-whenever-a-file-changes
+        - when the server restarts, make sure which will always read from the most recent
+            classifier file (ideas: find most recent file. backup/overwrite old classifier.)
+    """
+    
+    data.load()
+    retrain_data.load()
+    
+    data.appendData(retrain_data)
+    
+    classifier.load()
+      
+    return True
+
+@app.route('/count_retrains')
+def count_retrains():
+    """ URL hook that initiates retraining of the classifier
+
+    TODO: shouldn't be public - maybe this a hook is only accessible via SECRET_KEY?
+    """
+    if not _count_retrains():
+        return '', 400
+    return ''
+
+def _count_retrains():
+    querystr = "UPDATE " + DB_FIELDS['table'] + ' SET ' 
+    querystr += DB_FIELDS['table'] + '.' + DB_FIELDS['retrain_count'] + ' = count_table.counts FROM ' 
+    querystr += DB_FIELDS['table'] + ' JOIN (SELECT ' + RETRAIN_FIELDS['text_key'] + ', count(' 
+    querystr += RETRAIN_FIELDS['text_key'] + ') counts FROM ' + RETRAIN_FIELDS['table'] 
+    querystr += ' GROUP BY ' + RETRAIN_FIELDS['text_key'] + ') AS count_table ON ' 
+    querystr += DB_FIELDS['table']+ '.' + DB_FIELDS['pk'] + ' = count_table.grant_id'
+    
+    try:
+        conn = db.engine.connect()
+        result = conn.execute(querystr)
+        return True
+    except:
+        return None
+
 if __name__ == '__main__':
     debug = os.environ.get('DEBUG', True)
     port = os.environ.get('PORT', 9090)
-
+    
+    train_success = train()
     app.run(host='0.0.0.0',port=port, debug=debug)

@@ -37,7 +37,7 @@ class grantData:
         
     def fetchFromDB(self):
         topstr = ('TOP ' + str(self.dbFields['maxRows']) + ' ') if self.dbFields['maxRows'] != None else '' 
-        fieldstr = ','.join([self.dbFields['desc'],self.dbFields['org'],self.dbFields['label']])
+        fieldstr = ','.join(filter(None,[self.dbFields['desc'],self.dbFields['org'],self.dbFields['label']]))
         querystr = "select " + topstr + fieldstr + " from " + self.dbFields['table'] 
         
         try:
@@ -97,14 +97,17 @@ class grantData:
         #Slice into training and test sets
         np.random.shuffle(rows)
         cutoff = int(len(rows)*self.holdout_frac)
-        self.trainX, self.trainY = [list(l for l in zip(*rows[cutoff:]))][0]
-        self.testX, self.testY = [list(l for l in zip(*rows[:cutoff]))][0]
-        
+        self.trainX, self.testX, self.trainY, self.testY = (),(),(),()
+        try:
+            self.trainX, self.trainY = [list(l for l in zip(*rows[cutoff:]))][0]
+            self.testX, self.testY = [list(l for l in zip(*rows[:cutoff]))][0]
+        except ValueError:
+            pass
     def appendData(self, moreData):
         self.trainX = self.trainX + moreData.trainX
         self.trainY = self.trainY + moreData.trainY
-        self.testX = self.testX + moredata.testX
-        self.testY = self.testY + moredata.testY
+        self.testX = self.testX + moreData.testX
+        self.testY = self.testY + moreData.testY
 
 def loadNonStaleFile(picklefile, loader, max_age = datetime.timedelta(days=1)):
     # Loads object from disk if the file is not older than max_age
