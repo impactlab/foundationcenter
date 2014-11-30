@@ -85,7 +85,7 @@ def text():
     text = _text()
     if not text:
         return '', 400 # error
-    text['text'] = text.pop[DB_FIELDS['desc']]
+    text['text'] = text.pop(DB_FIELDS['desc'])
     return json.dumps(text)
     
 def _text():
