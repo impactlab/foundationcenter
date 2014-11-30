@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# asdf asdf asdf 
 from flask import Flask, request, json, current_app
 
 import os,re, pickle, datetime
@@ -20,65 +21,61 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import regexp_tokenize
 from nltk.tokenize import RegexpTokenizer
-
-#Settings for connection to database server
-DB_SETTINGS = {'driver': '{FreeTDS}',
-               'server': '172.16.8.60',
-               'port': '1433',
-               'uid': 'user',
-               'pwd': 'textmining',
-               'database':'text_classification'}
-
-#Settings for database table. 
-#'table' is the table name, plus the following specific fields
-#desc: grant description text
-#label: three-character grant label 
-#org: organization name, currently this is concatenated with the text description
-DB_FIELDS = {'table':'grants', 
-             'desc': 'description', 
-             'org': 'recipient_name',
-             'label': 'activity_override3',
-             'maxRows': 50000}
-                          
+                     
 class grantData:
     #Handles fetching of grant data from database or file. 
-    def __init__(self, dbSettings = DB_SETTINGS, dbFields = DB_FIELDS, 
+    def __init__(self, dbSettings = None, dbFields = None, 
                  holdout_frac = 0.1, picklefile = None, 
-                 reload_time = datetime.timedelta(days=1)):
+                 reload_time = datetime.timedelta(days=1),
+                 sqla_connection = None):
         self.dbSettings = dbSettings
         self.dbFields = dbFields
         self.reload_time = reload_time #number of days before data saved to file becomes stale
         self.picklefile = picklefile
         self.holdout_frac = holdout_frac #fraction of data to be held out for training
+        self.sqla_connection = sqla_connection
         
     def fetchFromDB(self):
+        topstr = ('TOP ' + str(self.dbFields['maxRows']) + ' ') if self.dbFields['maxRows'] != None else '' 
+        fieldstr = ','.join([self.dbFields['desc'],self.dbFields['org'],self.dbFields['label']])
+        querystr = "select " + topstr + fieldstr + " from " + self.dbFields['table'] 
+        
         try:
-            cnxn = pyo.connect(**self.dbSettings)           
-            cursor = cnxn.cursor()
+            if self.sqla_connection is not None:
+                rows = self.sqla_connection.execute(querystr)
+                rowstrip = []
+                try:
+                    for row in rows:
+                        rowstrip.append([row[self.dbFields['desc']]+u' '+row[self.dbFields['org']], 
+                                         row[self.dbFields['label']]])
+                except:
+                    for row in rows:
+                        rowstrip.append([row[self.dbFields['desc']], row[self.dbFields['label']]])                    
+                                          
+            else:
+                cnxn = pyo.connect(**self.dbSettings)           
+                cursor = cnxn.cursor()
+                cursor.execute(querystr)
+                rows = cursor.fetchall()
             
-            topstr = ('TOP ' + str(DB_FIELDS['maxRows']) + ' ') if DB_FIELDS['maxRows'] != None else '' 
-            fieldstr = ','.join([self.dbFields['desc'],self.dbFields['org'],self.dbFields['label']])
-            cursor.execute("select " + topstr + fieldstr + " from " + self.dbFields['table'])
-            rows = cursor.fetchall()
+                field_names = [d[0] for d in cursor.description]
             
-            field_names = [d[0] for d in cursor.description]
+                try: 
+                    desc_ix = field_names.index(self.dbFields['desc'])
+                    label_ix = field_names.index(self.dbFields['label'])
+                except ValueError:
+                    return [[]]
             
-            try: 
-                desc_ix = field_names.index(self.dbFields['desc'])
-                label_ix = field_names.index(self.dbFields['label'])
-            except valueError:
-                return [[]]
-            
-            #Check if table has organization names, 
-            #if so append them to the grant descriptions
-            rowstrip =[]
-            try:
-                org_ix = field_names.index(self.dbFields['org'])               
-                for row in rows:
-                    rowstrip.append([row[desc_ix] + ' ' + row[org_ix], row[label_ix]])  
-            except valueError:
-                for row in rows:
-                    rowstrip.append([row[desc_ix], row[label_ix]])                
+                #Check if table has organization names, 
+                #if so append them to the grant descriptions
+                rowstrip =[]
+                try:
+                    org_ix = field_names.index(self.dbFields['org'])               
+                    for row in rows:
+                        rowstrip.append([row[desc_ix] + ' ' + row[org_ix], row[label_ix]])  
+                except valueError:
+                    for row in rows:
+                        rowstrip.append([row[desc_ix], row[label_ix]])                
             
             #pickle the database query
             self.loadTime = time()
