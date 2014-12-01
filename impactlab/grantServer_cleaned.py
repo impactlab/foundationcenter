@@ -1,10 +1,13 @@
 
 from flask import Flask, request, current_app, jsonify
 from flask.ext.sqlalchemy import SQLAlchemy
-import grantClassifier 
+
 import datetime, os
 import simplejson as json
+import threading, Queue
 import numpy as np
+
+import grantClassifier 
 
 #Parameters
 
@@ -16,6 +19,7 @@ PICKLE_FILE = 'gd.pkl'
 #desc: grant description text
 #label: three-character grant label 
 #org: organization name, currently this is concatenated with the text description
+
 DB_FIELDS = {'table':'grants', 
              'desc': 'description', 
              'org': 'recipient_name',
@@ -32,16 +36,20 @@ RETRAIN_FIELDS = {'table':'retrained_grants',
                   'maxRows': None}
 
 TOPN_DEFAULT = 5
+
+#
+
 MAXIMUM_OFFSET = 3000
-QUERY_ROWS = 500
+QUERY_ROWS = 50
 STORED_ROWS = 50
+RELOAD_FRAC = 0.75
 
 #
 
 app = Flask(__name__)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URI
-app.config['SQLALCHEMY_ECHO'] = True
+app.config['SQLALCHEMY_ECHO'] = False
 
 db = SQLAlchemy(app)
 
@@ -54,10 +62,12 @@ retrainData = grantClassifier.grantData(sqla_connection = db.engine.connect(),
 
 myClassifier = grantClassifier.grantClassifier(myData)
 
-stored_texts = []
+stored_texts = Queue.Queue()
+lock = threading.Lock()
 
 class Grant(db.Model):
     __table__ = db.Table(DB_FIELDS['table'], db.metadata, autoload=True, autoload_with=db.engine)
+    
     def as_dict(self):
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}    
         
@@ -98,16 +108,20 @@ def _text():
     input: n/a
     output: dict (on success) or None (on failure)
     """
-    if len(stored_texts) > 0:
-        return stored_texts.pop(0).as_dict()  
+    print stored_texts.qsize(), (STORED_ROWS * RELOAD_FRAC)
+    if stored_texts.qsize() < (STORED_ROWS * RELOAD_FRAC):
+        if lock.acquire(False):
+            print "lock acquired"
+            t = threading.Thread(target=_fetch_texts, args = (stored_texts, lock))
+            t.daemon = True
+            t.start()        
+    
+    if not stored_texts.empty():
+        return stored_texts.get().as_dict()  
     else:
-        stored_texts.extend(_fetch_texts())
-        try:
-            return stored_texts.pop(0).as_dict()  
-        except IndexError:
-            return None
+        return None
 
-def _fetch_texts():    
+def _fetch_texts(q, lock):    
     try:
         max_offset = Grant.query.filter(Grant.number_retrains == None).count()
         if max_offset == 0:
@@ -120,11 +134,16 @@ def _fetch_texts():
             .offset(offset) \
             .limit(QUERY_ROWS) \
             .all()
-        res_sorted = sorted(result, key = lambda rr: myClassifier.predict([getattr(rr,DB_FIELDS['desc'])])[1])[:QUERY_ROWS]  
+        res_sub = sorted(result, key = lambda rr: myClassifier.predict([getattr(rr,DB_FIELDS['desc'])])[1])[:STORED_ROWS]  
+        np.random.shuffle(res_sub)
         
-        return res_sorted
-    except:
-        return None
+        map(q.put, res_sub)
+        print "loaded additional rows"
+    finally:
+        lock.release()
+        print "lock released"
+        return True        
+        
     
 @app.route('/label', methods=['POST'])
 def label():
@@ -260,7 +279,6 @@ def _train(data=None, retrain_data=None, classifier=None):
     
     classifier.load()
     
-      
     return True
 
 @app.route('/count_retrains')
@@ -293,6 +311,10 @@ if __name__ == '__main__':
     port = os.environ.get('PORT', 9090)
     
     train_success = train()
-    stored_texts.extend(_fetch_texts())
+    
+    lock.acquire()
+    t = threading.Thread(target=_fetch_texts, args = (stored_texts, lock))
+    t.daemon = True
+    t.start()        
     
     app.run(host='0.0.0.0',port=port, debug=debug)
