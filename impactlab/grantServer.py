@@ -1,68 +1,76 @@
-"""
-Prototype API for Foundation Center
 
-Loads data from database or file, 
-trains SVM classifier.
-
-Given a grant description as string, 
-returns either 
-(1) the predicted grant type and estimated
-probability of being correct
-or (2) the top n classes and scores 
-for each class
-"""
-
-from flask import Flask, request, json, current_app
+from flask import Flask, request, current_app, jsonify
 from flask.ext.sqlalchemy import SQLAlchemy
+
+import datetime, os
+import simplejson as json
+import threading, Queue
+import numpy as np
+
 import grantClassifier 
-import json, datetime
 
 #Parameters
 
+DATABASE_URI = 'mssql+pymssql://user:textmining@172.16.8.60:1433/text_classification'
+PICKLE_FILE = 'gd.pkl'
+
+#Settings for database table. 
+#'table' is the table name, plus the following specific fields
+#desc: grant description text
+#label: three-character grant label 
+#org: organization name, currently this is concatenated with the text description
+
+DB_FIELDS = {'table':'grants', 
+             'desc': 'description', 
+             'org': 'recipient_name',
+             'label': 'activity_override3',
+             'pk': 'grant_key',
+             'retrain_count': 'number_retrains',
+             'maxRows': 50000}
+
+RETRAIN_FIELDS = {'table':'retrained_grants',
+                  'desc':'description',
+                  'org': '',
+                  'label':'activity',
+                  'text_key': 'grant_id',
+                  'maxRows': None}
+
 TOPN_DEFAULT = 5
 
-#Text formatting functions:
+#
 
-def __pad(strdata):
-    # Pads `strdata` with a Request's callback argument, if specified, or does
-    # nothing.
-    if request.args.get('callback'):
-        return "%s(%s);" % (request.args.get('callback'), strdata)
-    else:
-        return strdata
+MAXIMUM_OFFSET = 3000
+QUERY_ROWS = 50
+STORED_ROWS = 50
+RELOAD_FRAC = 0.75
 
-def __mimetype():
-    if request.args.get('callback'):
-        return 'application/javascript'
-    else:
-        return 'application/json'
-
-def __dumps(*args, **kwargs):
-    # Serializes `args` and `kwargs` as JSON. Supports serializing an array
-    # as the top-level object, if it is the only argument.  
-    indent = None
-    if (current_app.config.get('JSONIFY_PRETTYPRINT_REGULAR', False)
-            and not request.is_xhr):
-        indent = 2
-    return json.dumps(args[0] if len(args) is 1 else dict(*args, **kwargs),
-                      indent=indent)
-
-#Main program
+#
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mssql+pymssql://user:textmining@172.16.8.60:1433/text_classification'
-app.config['SQLALCHEMY_ECHO'] = True
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URI
+app.config['SQLALCHEMY_ECHO'] = False
+
 db = SQLAlchemy(app)
 
-myData = grantClassifier.grantData(picklefile = 'gd.pkl')
-myData.load()
+myData = grantClassifier.grantData(picklefile = PICKLE_FILE, 
+                                   sqla_connection = db.engine.connect(), 
+                                   dbFields = DB_FIELDS)
+
+retrainData = grantClassifier.grantData(sqla_connection = db.engine.connect(), 
+                                        dbFields = RETRAIN_FIELDS)
 
 myClassifier = grantClassifier.grantClassifier(myData)
-myClassifier.load()
 
-#SQLAlchemy models
+stored_texts = Queue.Queue()
+lock = threading.Lock()
 
+class Grant(db.Model):
+    __table__ = db.Table(DB_FIELDS['table'], db.metadata, autoload=True, autoload_with=db.engine)
+    
+    def as_dict(self):
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns}    
+        
 class retrainedGrants(db.Model):
     __tablename__ = 'retrained_grants'
     rowid = db.Column(db.Integer, primary_key = True)
@@ -79,46 +87,230 @@ class retrainedGrants(db.Model):
     model_version = db.Column(db.String(255))
 
     @classmethod
-    def loadfromjson(cls, inStr):
-        inDict = json.loads(inStr)
+    def load(cls, inDict):
         inDict['entry_date'] = datetime.datetime.now()
         return cls(**inDict)
 
-#Flask routes
-
-@app.route('/svm_autoclassify/<grantDescription>')
-def svm_classify(grantDescription = None):
-    # Main end-point. Given a text returns the text, accuracy, and predicted class 
-    prediction, prob = myClassifier.predict([grantDescription])
-    return current_app.response_class(__pad(__dumps(
-        data=[i for i in [prediction[0],prob[0],grantDescription] ])),mimetype=__mimetype())
-
-@app.route('/svm_multiple/<grantDescription>/<topn>')
-def svm_multiple(grantDescription = None, topn = None):
-    # Alternate end-point. Given a text returns the text, plus the accuracy, and predicted class 
-    # of top-scoring classes
-    try: 
-        npredict = int(topn)
-    except ValueError:
-        npredict = TOPN_DEFAULT
-    top_classes = myClassifier.predict_multiple(grantDescription, npredict=npredict)
-    return current_app.response_class(__pad(json.dumps([grantDescription,top_classes])),mimetype=__mimetype())
-
-@app.route('/add_label/<something>', methods=['GET', 'POST'])
-def add_label(something = None):    
-    data = request.data
-    newRow = retrainedGrants.loadfromjson(data)
+@app.route('/text', methods=['GET'])
+def text():
+    # TODO: ALlow reading from wherever text is to be store """
+    """ GET returns a json containing {'text' : '<your text>'}, to be labeled by a human """
+    print "GET /text"
+    text = _text()
+    if not text:
+        return '', 400 # error
+    text['text'] = text.pop(DB_FIELDS['desc'])
+    return json.dumps(text)
     
-    db.session.add(newRow)
-    db.session.commit()
-    return 'Added row to database\n' + data
+def _text():
+    """ returns text to be labeled
+    
+    input: n/a
+    output: dict (on success) or None (on failure)
+    """
+    if stored_texts.qsize() < (STORED_ROWS * RELOAD_FRAC):
+        if lock.acquire(False):
+            t = threading.Thread(target=_fetch_texts, args = (stored_texts, lock))
+            t.daemon = True
+            t.start()        
+    
+    if not stored_texts.empty():
+        return stored_texts.get().as_dict()  
+    else:
+        return None
 
-@app.route('/svm_batch/<something>', methods=['GET', 'POST'])
-def svm_batch(something = None):
-    data = json.loads(request.data)
-    prediction, prob = myClassifier.predict(data)
-    return current_app.response_class(__pad(
-        json.dumps([request.data, zip(prediction, prob)])),mimetype=__mimetype())
+def _fetch_texts(q, lock):    
+    try:
+        max_offset = Grant.query.filter(Grant.number_retrains == None).count()
+        if max_offset == 0:
+            min_retrains = db.session.query(db.func.min(Grant.number_retrains)).scalar()
+            max_offset = Grant.query.filter(Grant.number_retrains == min_retrains).count()
+        max_offset = min(max_offset, MAXIMUM_OFFSET)    
+        offset = int(np.random.rand()*max_offset)
+        result = Grant.query \
+            .order_by(Grant.number_retrains) \
+            .offset(offset) \
+            .limit(QUERY_ROWS) \
+            .all()
+        res_sub = sorted(result, key = lambda rr: myClassifier.predict([getattr(rr,DB_FIELDS['desc'])])[1])[:STORED_ROWS]  
+        np.random.shuffle(res_sub)
+        
+        map(q.put, res_sub)
+    finally:
+        lock.release()
+        return True        
+        
+    
+@app.route('/label', methods=['POST'])
+def label():
+    """ POST with json body, returns 200 if saved successfully
+
+    For example, to save a text label using row ids from a database, one might write
+
+    $ curl -X POST -H "Content-Type: application/json" -d '{"text_id":5,"label_id":19}' localhost:9090/label
+    """
+    j = request.get_json()
+    print "POST /label", j
+    if not _label(j):
+        return '', 400 # error
+    return ''
+
+def _label(j={}):
+    """ saves label and meta-data for text. returns True/False on success/failure.
+
+    input: user-defined dict
+    output: boolean (True on success) or None (on Failure)
+
+    For example, one might save properties such as
+
+    {
+        // essential - mapping of text to label
+        'text_id' : 5,
+        'label_id' : 19,
+
+        // optional - metadata
+        'user_id' : foo,
+        'timestamp' : bar,
+        'model_version' : baz,
+    }
+    """
+    try:
+        newRow = retrainedGrants.load(j)
+        db.session.add(newRow)
+        db.session.commit()
+        return True
+    except:
+        return None
+
+@app.route('/classify', methods=['POST'])
+def classify():
+    """ POST with json body of {'text':'<your text>'}, returns a dict of classifications
+
+    Example:
+
+    $ curl -X POST -H "Content-Type: application/json" -d '{"text":"classify me!"}' localhost:9090/classify
+    {
+        ... // classification details
+    }
+    """
+    j = request.get_json()
+    print "post /classify", j
+    c = _classify(j)
+    if not c:
+        return '', 400 # error
+    return json.dumps(c)
+
+def _classify(j={}):
+    """ given text, returns a dict describing machine classifications.
+
+    input: string
+    output: dict (on success) or None (on error)
+
+    For example, one might save properties such as
+
+    {
+        'svm' : {
+            'category' : 'bob',
+            'confidence' : .97
+        },
+        'svm_multiple' : {
+            // etc -
+        }
+    }
+    """  
+    
+    try: 
+        npredict = int(j['npredict'])
+    except:
+        npredict = TOPN_DEFAULT    
+        
+    try:
+        top_classes = myClassifier.predict_multiple(j['text'], npredict=npredict)
+        
+        #Format output
+        c = {'svm' : []}  
+        for ii in range(len(top_classes)):
+            item = {'category': top_classes[ii][0],
+                         'confidence': top_classes[ii][1],
+                         'rank': ii}
+            c['svm'].append(item)        
+        return c
+    except:
+        return None
+
+@app.route('/train')
+def train():
+    """ URL hook that initiates retraining of the classifier
+
+    TODO: shouldn't be public - maybe this a hook is only accessible via SECRET_KEY?
+    """
+    if not _train(myData, retrainData, myClassifier):
+        return '', 400
+    return ''
+
+def _train(data=None, retrain_data=None, classifier=None):
+    """ (re)train the classifer given new labeled data
+
+    input: n/a
+    output: bool (on success) or None (on failure)
+    In the _train() method, this process might look like:
+        - run classifier(s) training method on all labeled data
+        - output a pickle file of newly built classifer, with data in filename
+        NOTE: It's probably better to do this in another process so as to not hit
+        100 percent CPU in the API's process due to retraining.
+
+    Externally, one might manage this via:
+        - have a cronjob that runs daily and hits this hook to do the retraining
+        - have a cronjob that runs daily (later, after retraining) and restarts the server.
+            alternately use a unix utility like `inotifywait` in order to watch for file changes
+            and restart... http://superuser.com/questions/181517/how-to-execute-a-command-whenever-a-file-changes
+        - when the server restarts, make sure which will always read from the most recent
+            classifier file (ideas: find most recent file. backup/overwrite old classifier.)
+    """
+    
+    data.load()
+    retrain_data.load()
+    
+    data.appendData(retrain_data)
+    
+    classifier.load()
+    
+    return True
+
+@app.route('/count_retrains')
+def count_retrains():
+    """ URL hook that initiates retraining of the classifier
+
+    TODO: shouldn't be public - maybe this a hook is only accessible via SECRET_KEY?
+    """
+    if not _count_retrains():
+        return '', 400
+    return ''
+
+def _count_retrains():
+    querystr = "UPDATE " + DB_FIELDS['table'] + ' SET ' 
+    querystr += DB_FIELDS['table'] + '.' + DB_FIELDS['retrain_count'] + ' = count_table.counts FROM ' 
+    querystr += DB_FIELDS['table'] + ' JOIN (SELECT ' + RETRAIN_FIELDS['text_key'] + ', count(' 
+    querystr += RETRAIN_FIELDS['text_key'] + ') counts FROM ' + RETRAIN_FIELDS['table'] 
+    querystr += ' GROUP BY ' + RETRAIN_FIELDS['text_key'] + ') AS count_table ON ' 
+    querystr += DB_FIELDS['table']+ '.' + DB_FIELDS['pk'] + ' = count_table.grant_id'
+    
+    try:
+        conn = db.engine.connect()
+        result = conn.execute(querystr)
+        return True
+    except:
+        return None
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0',port =9090) 
+    debug = os.environ.get('DEBUG', True)
+    port = os.environ.get('PORT', 9090)
+    
+    train_success = train()
+    
+    lock.acquire()
+    t = threading.Thread(target=_fetch_texts, args = (stored_texts, lock))
+    t.daemon = True
+    t.start()        
+    
+    app.run(host='0.0.0.0',port=port, debug=debug)
