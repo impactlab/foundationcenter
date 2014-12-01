@@ -108,10 +108,8 @@ def _text():
     input: n/a
     output: dict (on success) or None (on failure)
     """
-    print stored_texts.qsize(), (STORED_ROWS * RELOAD_FRAC)
     if stored_texts.qsize() < (STORED_ROWS * RELOAD_FRAC):
         if lock.acquire(False):
-            print "lock acquired"
             t = threading.Thread(target=_fetch_texts, args = (stored_texts, lock))
             t.daemon = True
             t.start()        
@@ -138,10 +136,8 @@ def _fetch_texts(q, lock):
         np.random.shuffle(res_sub)
         
         map(q.put, res_sub)
-        print "loaded additional rows"
     finally:
         lock.release()
-        print "lock released"
         return True        
         
     
