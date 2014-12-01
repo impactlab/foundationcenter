@@ -213,16 +213,12 @@ def _classify(j={}):
         top_classes = myClassifier.predict_multiple(j['text'], npredict=npredict)
         
         #Format output
-        c = {'svm' : 
-             {'category': top_classes[0][0],
-              'confidence': top_classes[0][1], 
-              'alternates': []}  
-            }  
-        for ii in range(1, len(top_classes)):
-            alternate = {'category': top_classes[ii][0],
+        c = {'svm' : []}  
+        for ii in range(len(top_classes)):
+            item = {'category': top_classes[ii][0],
                          'confidence': top_classes[ii][1],
                          'rank': ii}
-            c['svm']['alternates'].append(alternate)        
+            c['svm'].append(item)        
         return c
     except:
         return None
