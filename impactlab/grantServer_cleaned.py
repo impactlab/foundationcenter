@@ -32,7 +32,9 @@ RETRAIN_FIELDS = {'table':'retrained_grants',
                   'maxRows': None}
 
 TOPN_DEFAULT = 5
-MAXIMUM_OFFSET = 1000
+MAXIMUM_OFFSET = 3000
+QUERY_ROWS = 500
+STORED_ROWS = 50
 
 #
 
@@ -40,6 +42,7 @@ app = Flask(__name__)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URI
 app.config['SQLALCHEMY_ECHO'] = True
+
 db = SQLAlchemy(app)
 
 myData = grantClassifier.grantData(picklefile = PICKLE_FILE, 
@@ -51,6 +54,7 @@ retrainData = grantClassifier.grantData(sqla_connection = db.engine.connect(),
 
 myClassifier = grantClassifier.grantClassifier(myData)
 
+stored_texts = []
 
 class Grant(db.Model):
     __table__ = db.Table(DB_FIELDS['table'], db.metadata, autoload=True, autoload_with=db.engine)
@@ -94,6 +98,16 @@ def _text():
     input: n/a
     output: dict (on success) or None (on failure)
     """
+    if len(stored_texts) > 0:
+        return stored_texts.pop(0).as_dict()  
+    else:
+        stored_texts.extend(_fetch_texts())
+        try:
+            return stored_texts.pop(0).as_dict()  
+        except IndexError:
+            return None
+
+def _fetch_texts():    
     try:
         max_offset = Grant.query.filter(Grant.number_retrains == None).count()
         if max_offset == 0:
@@ -104,8 +118,11 @@ def _text():
         result = Grant.query \
             .order_by(Grant.number_retrains) \
             .offset(offset) \
-            .first() 
-        return result.as_dict()
+            .limit(QUERY_ROWS) \
+            .all()
+        res_sorted = sorted(result, key = lambda rr: myClassifier.predict([getattr(rr,DB_FIELDS['desc'])])[1])[:QUERY_ROWS]  
+        
+        return res_sorted
     except:
         return None
     
@@ -189,7 +206,7 @@ def _classify(j={}):
     
     try: 
         npredict = int(j['npredict'])
-    except ValueError:
+    except:
         npredict = TOPN_DEFAULT    
         
     try:
@@ -246,6 +263,7 @@ def _train(data=None, retrain_data=None, classifier=None):
     data.appendData(retrain_data)
     
     classifier.load()
+    
       
     return True
 
@@ -279,4 +297,6 @@ if __name__ == '__main__':
     port = os.environ.get('PORT', 9090)
     
     train_success = train()
+    stored_texts.extend(_fetch_texts())
+    
     app.run(host='0.0.0.0',port=port, debug=debug)
