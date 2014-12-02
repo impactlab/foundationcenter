@@ -60,7 +60,7 @@ myData = grantClassifier.grantData(picklefile = PICKLE_FILE,
 retrainData = grantClassifier.grantData(sqla_connection = db.engine.connect(), 
                                         dbFields = RETRAIN_FIELDS)
 
-myClassifier = grantClassifier.grantClassifier(myData)
+myClassifier = grantClassifier.grantClassifier(myData,kernel_reg=True)
 
 stored_texts = Queue.Queue()
 lock = threading.Lock()

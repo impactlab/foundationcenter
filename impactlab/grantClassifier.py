@@ -2,7 +2,8 @@
 # asdf asdf asdf 
 from flask import Flask, request, json, current_app
 
-import os,re, pickle, datetime
+import os,re,datetime
+import cPickle as pickle
 import pypyodbc as pyo
 import numpy as np
 import pandas as pd 
@@ -21,6 +22,7 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import regexp_tokenize
 from nltk.tokenize import RegexpTokenizer
+from statsmodels.nonparametric.kernel_regression import KernelReg
                      
 class grantData:
     #Handles fetching of grant data from database or file. 
@@ -34,6 +36,7 @@ class grantData:
         self.picklefile = picklefile
         self.holdout_frac = holdout_frac #fraction of data to be held out for training
         self.sqla_connection = sqla_connection
+
         
     def fetchFromDB(self):
         topstr = ('TOP ' + str(self.dbFields['maxRows']) + ' ') if self.dbFields['maxRows'] != None else '' 
@@ -80,7 +83,7 @@ class grantData:
             #pickle the database query
             self.loadTime = time()
             try:
-                pickle.dump(rowstrip, open(self.picklefile, 'wb'))
+                pickle.dump(rowstrip, open(self.picklefile, 'wb'),2)
             except:
                 pass
               
@@ -120,7 +123,7 @@ def loadNonStaleFile(picklefile, loader, max_age = datetime.timedelta(days=1)):
         filetime = datetime.datetime.fromtimestamp(os.path.getmtime(picklefile))
         if datetime.datetime.now() - filetime < max_age:
             try: 
-                return pickle.load(open(picklefile,'rb'))
+                return pickle.load(open(picklefile,'rb'),2)
             except:
                 pass  
     try: 
@@ -129,7 +132,7 @@ def loadNonStaleFile(picklefile, loader, max_age = datetime.timedelta(days=1)):
         pass
     
     try: 
-        return pickle.load(picklefile)
+        return pickle.load(open(picklefile,'rb'),2)
     except: 
         return None
 
@@ -137,13 +140,15 @@ class grantClassifier:
     #scikit-learn classifier for labeling grant descriptions with grant categories. 
 
     def __init__(self, data = None, nquantiles = 25, picklefile = None, 
-                 reload_time = datetime.timedelta(days=1), grid_search = False):
+                 reload_time = datetime.timedelta(days=1), grid_search = False,
+                 kernel_reg = False):
         self.classifier = None 
         self.data = data
         self.nquantiles = nquantiles
         self.picklefile = picklefile 
         self.reload_time = reload_time 
         self.grid_search = grid_search
+        self.kernel_reg = kernel_reg
     
     def load(self):
         #Loads classifier from disk if file exists and is not older than reload_time. 
@@ -171,7 +176,7 @@ class grantClassifier:
             clf = svmClassifier
         
         if self.picklefile is not None:
-            pickle.dump(clf, open(self.picklefile, 'wb'))  
+            pickle.dump(clf, open(self.picklefile, 'wb'),2)  
         
         return clf         
         
@@ -207,6 +212,9 @@ class grantClassifier:
     def calcProb(self, margins):
         #Given a margin, look up the quantile and then 
         #the accuracy of that quantile
+        if self.kernel_reg == True:
+            return self.kr.fit(margins)[0]
+            
         mbins = pd.cut(margins, self.marginBins, labels=False)
         mbins[margins<self.marginBins[0]] = 0 
         mbins[margins>self.marginBins[-1]] = self.nquantiles - 1 
@@ -217,14 +225,18 @@ class grantClassifier:
         #divide the SVM margins into quantiles and calculate the accuracy for each quantile
         margins = self.classifier.decision_function(self.data.testX)
         isCorrect = (self.classifier.predict(self.data.testX) == self.data.testY)
+        maxmargin = np.max(margins,1)
         
-        df=pd.DataFrame({'margins':np.max(margins,1), 'isCorrect':isCorrect})
+        df=pd.DataFrame({'margins':maxmargin, 'isCorrect':isCorrect})
         q, self.marginBins = pd.qcut(df['margins'],self.nquantiles,retbins=True)
         df['quantile'] = q.labels
         
         gb=df.groupby('quantile')
-        self.quantileProbs=gb['isCorrect'].mean()  
+        self.quantileProbs=gb['isCorrect'].mean() 
         
+        if self.kernel_reg == True:
+            self.kr = KernelReg(isCorrect, maxmargin, 'c')
+            
 # Tokenization and lemmatization
 # Isn't convenient to put inside the class 
 # because of issues with deep copying.  
