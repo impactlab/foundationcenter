@@ -123,8 +123,10 @@ def loadNonStaleFile(picklefile, loader, max_age = datetime.timedelta(days=1)):
         filetime = datetime.datetime.fromtimestamp(os.path.getmtime(picklefile))
         if datetime.datetime.now() - filetime < max_age:
             try: 
-                return pickle.load(open(picklefile,'rb'),2)
+                print "loading from file: " + picklefile + "  " + str(datetime.datetime.now())
+                return pickle.load(open(picklefile,'rb'))
             except:
+                print "load of " + picklefile + "failed"
                 pass  
     try: 
         return loader()

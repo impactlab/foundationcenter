@@ -1,18 +1,21 @@
 
 from flask import Flask, request, current_app, jsonify
 from flask.ext.sqlalchemy import SQLAlchemy
+from sqlalchemy import create_engine
 
 import datetime, os
 import simplejson as json
 import threading, Queue
 import numpy as np
+import multiprocessing as mp
 
 import grantClassifier 
 
 #Parameters
 
 DATABASE_URI = 'mssql+pymssql://user:textmining@172.16.8.60:1433/text_classification'
-PICKLE_FILE = 'gd.pkl'
+DATA_PICKLE_FILE = 'gd.pkl'
+CLF_PICKLE_FILE = 'clf.pkl'
 
 #Settings for database table. 
 #'table' is the table name, plus the following specific fields
@@ -53,19 +56,25 @@ app.config['SQLALCHEMY_ECHO'] = False
 
 db = SQLAlchemy(app)
 
-myData = grantClassifier.grantData(picklefile = PICKLE_FILE, 
+myData = grantClassifier.grantData(picklefile = DATA_PICKLE_FILE, 
                                    sqla_connection = db.engine.connect(), 
                                    dbFields = DB_FIELDS)
 
 retrainData = grantClassifier.grantData(sqla_connection = db.engine.connect(), 
                                         dbFields = RETRAIN_FIELDS)
 
-myClassifier = grantClassifier.grantClassifier(myData,kernel_reg=True)
+myClassifier = grantClassifier.grantClassifier(myData,picklefile = CLF_PICKLE_FILE,
+                                               kernel_reg=True)
 
 stored_texts = Queue.Queue()
 lock = threading.Lock()
 
+retrain_flag_queue = mp.Queue()  
+retrain_lock = mp.Lock()
+
 class Grant(db.Model):
+    #Use SQLAlchemy to reflect the existing database table. 
+    
     __table__ = db.Table(DB_FIELDS['table'], db.metadata, autoload=True, autoload_with=db.engine)
     
     def as_dict(self):
@@ -93,7 +102,6 @@ class retrainedGrants(db.Model):
 
 @app.route('/text', methods=['GET'])
 def text():
-    # TODO: ALlow reading from wherever text is to be store """
     """ GET returns a json containing {'text' : '<your text>'}, to be labeled by a human """
     print "GET /text"
     text = _text()
@@ -120,6 +128,14 @@ def _text():
         return None
 
 def _fetch_texts(q, lock):    
+    """ preloads additional texts to improve speed of _text
+    
+    input
+    q: queue in which to store additional texts
+    lock: lock to be released after fetching completes
+    
+    output: boolean (True on success, None on failure)
+    """
     try:
         max_offset = Grant.query.filter(Grant.number_retrains == None).count()
         if max_offset == 0:
@@ -136,9 +152,12 @@ def _fetch_texts(q, lock):
         np.random.shuffle(res_sub)
         
         map(q.put, res_sub)
+        success = True
+    except:
+        success = None
     finally:
         lock.release()
-        return True        
+        return success    
         
     
 @app.route('/label', methods=['POST'])
@@ -218,7 +237,16 @@ def _classify(j={}):
         }
     }
     """  
-    
+    if not retrain_flag_queue.empty():
+        try:
+            retrain_flag_queue.get_nowait()
+            #reload classifier from disk
+            print "classifier reloading: " + str(datetime.datetime.now())
+            myClassifier.load()
+            print "classifier reloaded: " + str(datetime.datetime.now())
+        except Empty:
+            pass
+        
     try: 
         npredict = int(j['npredict'])
     except:
@@ -247,7 +275,48 @@ def train():
     if not _train(myData, retrainData, myClassifier):
         return '', 400
     return ''
+    
+def _train_subprocess(flag_queue, lock):
+    print "retraining started: " + str(datetime.datetime.now())
+    newEngine = create_engine(DATABASE_URI)
+    newConn = newEngine.connect()
+    
+    newData = grantClassifier.grantData(picklefile = DATA_PICKLE_FILE, 
+                                   sqla_connection = newConn, 
+                                   dbFields = DB_FIELDS)
 
+    newRetrainData = grantClassifier.grantData(sqla_connection = newConn, 
+                                        dbFields = RETRAIN_FIELDS)
+
+    newClassifier = grantClassifier.grantClassifier(newData,picklefile = CLF_PICKLE_FILE,
+                                                    reload_time = datetime.timedelta(days=0), kernel_reg=True)
+    
+    newData.load()
+    newRetrainData.load()
+    print "data fetched: " + str(datetime.datetime.now())
+    
+    newData.appendData(newRetrainData)
+    
+    newClassifier.load()   
+    print "classifier trained: " + str(datetime.datetime.now())
+    
+    flag_queue.put(True)
+    lock.release()
+    return True
+
+@app.route('/train_async')
+def train_async():
+    if not _train_async():
+        return '', 400
+    return ''    
+
+def _train_async():
+    if retrain_lock.acquire(False):
+        p = mp.Process(target=_train_subprocess,args = (retrain_flag_queue,retrain_lock))
+        p.start()
+        return True
+    return False
+    
 def _train(data=None, retrain_data=None, classifier=None):
     """ (re)train the classifer given new labeled data
 
@@ -279,7 +348,7 @@ def _train(data=None, retrain_data=None, classifier=None):
 
 @app.route('/count_retrains')
 def count_retrains():
-    """ URL hook that initiates retraining of the classifier
+    """ URL hook that initiates updating of the retrain count
 
     TODO: shouldn't be public - maybe this a hook is only accessible via SECRET_KEY?
     """
@@ -288,6 +357,13 @@ def count_retrains():
     return ''
 
 def _count_retrains():
+    """
+    Executes a database query that updates the retrain count, 
+    i.e. the number of human labels for each text
+    
+    input: n/a
+    output: boolean (True on success, None on failure)
+    """
     querystr = "UPDATE " + DB_FIELDS['table'] + ' SET ' 
     querystr += DB_FIELDS['table'] + '.' + DB_FIELDS['retrain_count'] + ' = count_table.counts FROM ' 
     querystr += DB_FIELDS['table'] + ' JOIN (SELECT ' + RETRAIN_FIELDS['text_key'] + ', count(' 
@@ -302,6 +378,8 @@ def _count_retrains():
     except:
         return None
 
+
+
 if __name__ == '__main__':
     debug = os.environ.get('DEBUG', True)
     port = os.environ.get('PORT', 9090)
@@ -314,3 +392,5 @@ if __name__ == '__main__':
     t.start()        
     
     app.run(host='0.0.0.0',port=port, debug=debug)
+    
+
