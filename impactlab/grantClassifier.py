@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# asdf asdf asdf 
 from flask import Flask, request, json, current_app
 
 import os,re,datetime
@@ -49,11 +48,13 @@ class grantData:
                 rowstrip = []
                 try:
                     for row in rows:
-                        rowstrip.append([row[self.dbFields['desc']]+u' '+row[self.dbFields['org']], 
-                                         row[self.dbFields['label']]])
+                        if row[self.dbFields['desc']] and row[self.dbFields['label']]:
+                            rowstrip.append([row[self.dbFields['desc']]+u' '+row[self.dbFields['org']], 
+                                             row[self.dbFields['label']]])
                 except:
                     for row in rows:
-                        rowstrip.append([row[self.dbFields['desc']], row[self.dbFields['label']]])                    
+                        if row[self.dbFields['desc']] and row[self.dbFields['label']]:
+                            rowstrip.append([row[self.dbFields['desc']], row[self.dbFields['label']]])                    
                                           
             else:
                 cnxn = pyo.connect(**self.dbSettings)           

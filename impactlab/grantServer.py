@@ -1,4 +1,3 @@
-
 from flask import Flask, request, current_app, jsonify
 from flask.ext.sqlalchemy import SQLAlchemy
 from sqlalchemy import create_engine
@@ -29,7 +28,7 @@ DB_FIELDS = {'table':'grants',
              'label': 'activity_override3',
              'pk': 'grant_key',
              'retrain_count': 'number_retrains',
-             'maxRows': 50000}
+             'maxRows': 200000}
 
 RETRAIN_FIELDS = {'table':'retrained_grants',
                   'desc':'description',
