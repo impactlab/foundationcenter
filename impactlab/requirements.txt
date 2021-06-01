@@ -52,6 +52,6 @@ simplejson==3.6.5
 six==1.5.2
 ssh-import-id==3.21
 textclean==0.4
-urllib3==1.7.1
+urllib3==1.26.5
 wsgiref==0.1.2
 zope.interface==4.0.5
