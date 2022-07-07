@@ -44,7 +44,7 @@ python-apt==0.9.3.5
 python-dateutil==2.2
 python-debian==0.1.21-nmu2ubuntu2
 pytz==2014.7
-requests==2.2.1
+requests==2.20.0
 scikit-learn==0.15.2
 scipy==0.14.0
 simplegeneric==0.8.1
